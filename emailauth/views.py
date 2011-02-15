@@ -20,7 +20,7 @@ from django.utils.translation import ugettext_lazy as _
 
 from emailauth.forms import (LoginForm, RegistrationForm,
     PasswordResetRequestForm, PasswordResetForm, AddEmailForm, DeleteEmailForm,
-    ConfirmationForm)
+    ConfirmationForm, InviteForm, RegistrationAfterInviteForm)
 from emailauth.models import UserEmail
 
 from emailauth.utils import (use_single_email, requires_single_email_mode,
@@ -151,6 +151,77 @@ def register_continue(request, email,
     return render_to_response(template_name, {'email': email},
         RequestContext(request))
 
+def default_invite_callback(form, email):
+    data = form.cleaned_data
+    user = User()
+    user.is_active = False
+    user.email = email.email
+    user.set_password(uuid4())
+    user.username = ('%s' % (uuid4()))[:get_max_length(User, 'username')]
+    user.save()
+    email.user = user
+
+def invite(request, callback=default_invite_callback):
+    if request.method == 'POST':
+        form = InviteForm(request.POST)
+        if form.is_valid():
+            email_obj = UserEmail.objects.create_unverified_email(
+                form.cleaned_data['email'], invite=True)
+            email_obj.send_invite_email(form.cleaned_data['network_name'])
+
+            if callback is not None:
+                callback(form, email_obj)
+
+            site = Site.objects.get_current()
+            email_obj.user.message_set.create(message='Welcome to %s.' % site.name)
+
+            email_obj.network_name = form.cleaned_data['network_name']
+
+            email_obj.save()
+            return HttpResponseRedirect(reverse('emailauth_invite_continue',
+                args=[quote_plus(email_obj.email)]))
+    else:
+        form = InviteForm()
+
+    return render_to_response('emailauth/invite.html', {'form': form},
+        RequestContext(request))
+
+
+def invite_continue(request, email,
+    template_name='emailauth/invite_continue.html'):
+
+    return render_to_response(template_name, {'email': email},
+        RequestContext(request))
+
+def default_register_after_invite_callback(form, email):
+    data = form.cleaned_data
+    user = email.user
+    user.first_name = data['first_name']
+    user.is_active = True
+    user.set_password(data['password1'])
+    user.save()
+    email.user = user
+
+def register_after_invite(request, email, verification_key, callback=default_register_after_invite_callback):
+    if request.method == 'POST':
+        form = RegistrationAfterInviteForm(request.POST, email=email)
+        if form.is_valid():
+            from django.contrib.auth import login
+            email_obj = UserEmail.objects.verify(verification_key)
+            if not email_obj.verified or not email_obj.invite:
+                return HttpResponseRedirect(settings.LOGIN_URL)
+            if callback is not None:
+                callback(form, email_obj)
+            email_obj.user.backend = 'emailauth.backends.EmailBackend'
+            login(request, email_obj.user)
+            return HttpResponseRedirect(settings.LOGIN_REDIRECT_URL)
+    else:
+        form = RegistrationForm()
+
+    return render_to_response('emailauth/register_after_invite.html', {'form': form,
+                                                                       'email': email},
+        RequestContext(request))
+
 
 def default_verify_callback(request, email):
     email.user.is_active = True
@@ -170,6 +241,9 @@ def verify(request, verification_key, template_name='emailauth/verify.html',
     extra_context=None, callback=default_verify_callback):
 
     verification_key = verification_key.lower() # Normalize before trying anything with it.
+    email = UserEmail.objects.is_to_verify(verification_key)
+    if email and email.invite and email.verification_key:
+        return register_after_invite(request, email, verification_key)
     email = UserEmail.objects.verify(verification_key)
 
 

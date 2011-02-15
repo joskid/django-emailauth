@@ -5,6 +5,7 @@ from django.utils.translation import ugettext_lazy as _
 from django.contrib.auth.models import User
 
 from emailauth.models import UserEmail
+from uuid import uuid4
 
 attrs_dict = {}
 
@@ -60,7 +61,7 @@ class RegistrationForm(forms.Form):
         label=_(u'password'))
     password2 = forms.CharField(widget=forms.PasswordInput(render_value=False),
         label=_(u'password (again)'))
-    
+
     clean_password2 = clean_password2
 
     def clean_email(self):
@@ -72,7 +73,7 @@ class RegistrationForm(forms.Form):
         except UserEmail.DoesNotExist:
             pass
         return email
-        
+
 
     def save(self):
         data = self.cleaned_data
@@ -80,23 +81,69 @@ class RegistrationForm(forms.Form):
         user.email = data['email']
         user.first_name = data['name']
         user.set_password(data['password1'])
-        user.save()
-
-        desired_username = 'id_%d_%s' % (user.id, user.email)
-        user.username = desired_username[:get_max_length(User, 'username')]
+        user.username = ('%s' % (uuid4()))[:get_max_length(User, 'username')]
         user.is_active = False
         user.save()
-        
-        registration_profile = (
-            RegistrationProfile.objects.create_inactive_profile(user))
-        registration_profile.save()
 
-        profile = Account()
-        profile.user = user
-        profile.save()
+#        registration_profile = (
+#            RegistrationProfile.objects.create_inactive_profile(user))
+#        registration_profile.save()
+#
+#        profile = Account()
+#        profile.user = user
+#        profile.save()
 
-        return user, registration_profile
+        return user #, registration_profile
 
+class InviteForm(forms.Form):
+    email = forms.EmailField(label=_(u'email address'))
+    network_name = forms.CharField(label=_(u'network name'))
+
+    def clean_email(self):
+        email = self.cleaned_data['email']
+
+        try:
+            user = UserEmail.objects.get(email=email)
+            raise forms.ValidationError(_(u'This email is already taken.'))
+        except UserEmail.DoesNotExist:
+            pass
+        return email
+
+    def save(self):
+        data = self.cleaned_data
+        user = User()
+        user.email = data['email']
+        user.set_password(uuid4())
+        user.username = ('%s' % (uuid4()))[:get_max_length(User, 'username')]
+        user.is_active = False
+        user.save()
+
+class RegistrationAfterInviteForm(forms.Form):
+
+    first_name = forms.CharField(label=_(u'first name'),
+        max_length=get_max_length(User, 'first_name'),
+        help_text=_(u"That's how we'll call you in emails"))
+    password1 = forms.CharField(widget=forms.PasswordInput(render_value=False),
+        label=_(u'password'))
+    password2 = forms.CharField(widget=forms.PasswordInput(render_value=False),
+        label=_(u'password (again)'))
+
+    email = None
+
+    def __init__(self, *args, **kwargs):
+        self.email = kwargs.pop('email')
+        super(RegistrationAfterInviteForm, self).__init__(*args, **kwargs)
+
+    clean_password2 = clean_password2
+
+    def save(self):
+        data = self.cleaned_data
+        user = UserEmail.objects.get(email=self.email).user
+        user.first_name = data['first_name']
+        user.set_password(data['password1'])
+        user.is_active = True
+        user.save()
+        return user
 
 class PasswordResetRequestForm(forms.Form):
     email = forms.EmailField(label=_(u'your email address'))
@@ -115,7 +162,7 @@ class PasswordResetForm(forms.Form):
         label=_(u'password'))
     password2 = forms.CharField(widget=forms.PasswordInput(render_value=False),
         label=_(u'password (again)'))
-    
+
     clean_password2 = clean_password2
 
 

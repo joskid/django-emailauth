@@ -23,13 +23,19 @@ class UserEmailManager(models.Manager):
         key = sha_constructor(salt + email).hexdigest()
         return key
 
-    def create_unverified_email(self, email, user=None):
+    def create_unverified_email(self, email, user=None, invite=False):
         if use_automaintenance():
             self.delete_expired()
-        
+
         email_obj = UserEmail(email=email, user=user, default=user is None,
-            verification_key=self.make_random_key(email))
+            verification_key=self.make_random_key(email), invite=invite)
         return email_obj
+
+    def is_to_verify(self, verification_key):
+        try:
+            return self.get(verification_key=verification_key)
+        except self.model.DoesNotExist:
+            return None
 
     def verify(self, verification_key):
         try:
@@ -46,7 +52,7 @@ class UserEmailManager(models.Manager):
         date_threshold = (datetime.datetime.now() -
             datetime.timedelta(days=email_verification_days()))
         expired_emails = self.filter(code_creation_date__lt=date_threshold)
-    
+
         for email in expired_emails:
             if not email.verified:
                 user = email.user
@@ -72,6 +78,8 @@ class UserEmail(models.Model):
     verified = models.BooleanField(default=False)
     code_creation_date = models.DateTimeField(default=datetime.datetime.now)
     verification_key = models.CharField(_('verification key'), max_length=40)
+    invite = models.BooleanField(default=False)
+    network_name = models.CharField(_('network_name'), max_length=40)
 
     def __init__(self, *args, **kwds):
         super(UserEmail, self).__init__(*args, **kwds)
@@ -97,7 +105,7 @@ class UserEmail(models.Model):
 
     def send_verification_email(self, first_name=None):
         current_site = Site.objects.get_current()
-        
+
         subject = render_to_string('emailauth/verification_email_subject.txt',
             {'site': current_site})
         # Email subject *must not* contain newlines
@@ -112,7 +120,7 @@ class UserEmail(models.Model):
 
         if first_name is None:
             first_name = self.user.first_name
-        
+
         message = render_to_string('emailauth/verification_email.txt', {
             'verification_key': self.verification_key,
             'expiration_days': email_verification_days(),
@@ -125,7 +133,7 @@ class UserEmail(models.Model):
 
         django.core.mail.send_mail(subject, message,
             settings.DEFAULT_FROM_EMAIL, [self.email])
-        
+
 
     def verification_key_expired(self):
         expiration_date = datetime.timedelta(days=email_verification_days())
@@ -133,3 +141,31 @@ class UserEmail(models.Model):
             (self.code_creation_date + expiration_date <= datetime.datetime.now()))
 
     verification_key_expired.boolean = True
+
+    def send_invite_email(self, network_name):
+        current_site = Site.objects.get_current()
+
+        subject = render_to_string('emailauth/invite_email_subject.txt',
+            {'site': current_site})
+        # Email subject *must not* contain newlines
+        subject = ''.join(subject.splitlines())
+
+        emails = set()
+        if self.user is not None:
+            for email in self.__class__.objects.filter(user=self.user):
+                emails.add(email.email)
+        emails.add(self.email)
+        first_email = len(emails) == 1
+
+        message = render_to_string('emailauth/invite_email.txt', {
+            'verification_key': self.verification_key,
+            'expiration_days': email_verification_days(),
+            'site': current_site,
+            'first_email': first_email,
+            'network_name': network_name,
+        })
+
+        self.code_creation_date = datetime.datetime.now()
+
+        django.core.mail.send_mail(subject, message,
+            settings.DEFAULT_FROM_EMAIL, [self.email])
